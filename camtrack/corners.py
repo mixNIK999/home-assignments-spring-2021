@@ -49,23 +49,24 @@ class _CornerStorageBuilder:
 
 
 def _create_mask(mask, points):
-    for p in points.astype(np.uint8):
-        mask = cv2.circle(mask, (p[0], p[1]), 10, 255)
-    return mask
+    for p in points.astype(np.int32):
+        mask = cv2.circle(mask, (p[0], p[1]), 10, 255, -1)
+    return 255 - mask
 
 
 def _build_impl(frame_sequence: pims.FramesSequence,
                 builder: _CornerStorageBuilder) -> None:
     # TODO
     get_index = itertools.count()
-    feature_params = dict(maxCorners=1000,
-                          qualityLevel=0.1,
+    feature_params = dict(maxCorners=5000,
+                          qualityLevel=0.04,
                           minDistance=7,
                           blockSize=7)
 
     lk_params = dict(winSize=(15, 15),
                      maxLevel=2,
                      criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 10, 0.03))
+
     block_size = feature_params["blockSize"]
     image_0 = frame_sequence[0]
     old_points = cv2.goodFeaturesToTrack(image_0, **feature_params).reshape([-1, 2])
@@ -116,7 +117,8 @@ def _build_impl(frame_sequence: pims.FramesSequence,
         builder.set_corners_at_frame(frame, corners)
 
         image_0 = image_1
-        old_points = updated_points
+        old_points = corners_xy
+        ind = final_ind
 
 
 def build(frame_sequence: pims.FramesSequence,
