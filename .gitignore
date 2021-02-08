@@ -9,3 +9,6 @@ pip-delete-this-directory.txt
 
 # Jupyter Notebook
 .ipynb_checkpoints
+/dataset-20210208T114202Z-001/
+/venv/
+/.idea/

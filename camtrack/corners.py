@@ -12,6 +12,8 @@ __all__ = [
     'without_short_tracks'
 ]
 
+import itertools
+
 import click
 import cv2
 import numpy as np
@@ -49,16 +51,54 @@ class _CornerStorageBuilder:
 def _build_impl(frame_sequence: pims.FramesSequence,
                 builder: _CornerStorageBuilder) -> None:
     # TODO
+    get_index = itertools.count()
+    feature_params = dict(maxCorners=1000,
+                          qualityLevel=0.1,
+                          minDistance=7,
+                          blockSize=7)
+
+    lk_params = dict(winSize=(15, 15),
+                     maxLevel=2,
+                     criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 10, 0.03))
+    block_size = feature_params["blockSize"]
     image_0 = frame_sequence[0]
+    old_points = cv2.goodFeaturesToTrack(image_0, **feature_params)
+
+    corners_xy = old_points.reshape([-1, 2])
+    ind = np.array([next(get_index) for _ in range(corners_xy.shape[0])])
+    box = np.ones(corners_xy.shape[0]) * block_size
+
     corners = FrameCorners(
-        np.array([0]),
-        np.array([[0, 0]]),
-        np.array([55])
+        ind.copy(),
+        corners_xy.copy(),
+        box.copy()
     )
+
     builder.set_corners_at_frame(0, corners)
     for frame, image_1 in enumerate(frame_sequence[1:], 1):
+        img_0_uint8 = (image_0 * 255).astype(np.uint8)
+        img_1_uint8 = (image_1 * 255).astype(np.uint8)
+        updated_points, st, _ = cv2.calcOpticalFlowPyrLK(img_0_uint8, img_1_uint8, old_points, None, **lk_params)
+
+        updated_points = updated_points.reshape([-1, 2])
+        st = st.reshape(-1)
+
+        updated_points = updated_points[st == 1]
+        ind = ind[st == 1]
+
+        corners_xy = updated_points
+        box = np.ones(corners_xy.shape[0]) * block_size
+
+        corners = FrameCorners(
+            ind.copy(),
+            corners_xy.copy(),
+            box.copy()
+        )
+
         builder.set_corners_at_frame(frame, corners)
+
         image_0 = image_1
+        old_points = updated_points
 
 
 def build(frame_sequence: pims.FramesSequence,
