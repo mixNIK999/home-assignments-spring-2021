@@ -48,6 +48,12 @@ class _CornerStorageBuilder:
         return StorageImpl(item[1] for item in sorted(self._corners.items()))
 
 
+def _create_mask(mask, points):
+    for p in points.astype(np.uint8):
+        mask = cv2.circle(mask, (p[0], p[1]), 10, 255)
+    return mask
+
+
 def _build_impl(frame_sequence: pims.FramesSequence,
                 builder: _CornerStorageBuilder) -> None:
     # TODO
@@ -62,9 +68,9 @@ def _build_impl(frame_sequence: pims.FramesSequence,
                      criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 10, 0.03))
     block_size = feature_params["blockSize"]
     image_0 = frame_sequence[0]
-    old_points = cv2.goodFeaturesToTrack(image_0, **feature_params)
+    old_points = cv2.goodFeaturesToTrack(image_0, **feature_params).reshape([-1, 2])
 
-    corners_xy = old_points.reshape([-1, 2])
+    corners_xy = old_points
     ind = np.array([next(get_index) for _ in range(corners_xy.shape[0])])
     box = np.ones(corners_xy.shape[0]) * block_size
 
@@ -86,11 +92,23 @@ def _build_impl(frame_sequence: pims.FramesSequence,
         updated_points = updated_points[st == 1]
         ind = ind[st == 1]
 
-        corners_xy = updated_points
-        box = np.ones(corners_xy.shape[0]) * block_size
+        mask = np.zeros_like(img_0_uint8)
+        mask = _create_mask(mask, updated_points)
 
+        corners_xy = updated_points
+        final_ind = ind
+
+        new_points = cv2.goodFeaturesToTrack(image_1, mask=mask, **feature_params)
+        if new_points is not None:
+            new_points = new_points.reshape([-1, 2])
+            new_ind = np.array([next(get_index) for _ in range(new_points.shape[0])])
+
+            corners_xy = np.vstack([corners_xy, new_points])
+            final_ind = np.append(final_ind, new_ind)
+
+        box = np.ones(corners_xy.shape[0]) * block_size
         corners = FrameCorners(
-            ind.copy(),
+            final_ind.copy(),
             corners_xy.copy(),
             box.copy()
         )
