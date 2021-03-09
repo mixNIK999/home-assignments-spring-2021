@@ -12,3 +12,6 @@ pip-delete-this-directory.txt
 /dataset-20210208T114202Z-001/
 /venv/
 /.idea/
+
+# dataset
+/dataset/
