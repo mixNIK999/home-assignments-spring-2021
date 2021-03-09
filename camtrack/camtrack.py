@@ -19,11 +19,15 @@ from _camtrack import (
     calc_point_cloud_colors,
     pose_to_view_mat3x4,
     to_opencv_camera_mat3x3,
-    view_mat3x4_to_pose, build_correspondences, triangulate_correspondences, calc_inlier_indices
+    view_mat3x4_to_pose, build_correspondences, triangulate_correspondences, calc_inlier_indices,
+    rodrigues_and_translation_to_view_mat3x4, TriangulationParameters, check_baseline
 )
 
 RUNSAC_STEPS = 107
 MAX_REPROJ_ERROR = 0.1
+TRIANGULATION_PARAMS = TriangulationParameters(2, 0.1, 0.1)
+INIT_TRIANGULATION_PARAMS = TriangulationParameters(10, 0.01, 0.01)
+BASELINE = 20
 
 
 def track_and_calc_colors(camera_parameters: CameraParameters,
@@ -44,12 +48,13 @@ def track_and_calc_colors(camera_parameters: CameraParameters,
     # init
     id1, pose1 = known_view_1
     id2, pose2 = known_view_2
+    print(f"init tracking with {id1} & {id2} frames")
     correspondence = build_correspondences(corner_storage[id1], corner_storage[id2])
     points3d, correspondence_ids, median_cos = triangulate_correspondences(correspondence,
                                                                            pose_to_view_mat3x4(pose1),
                                                                            pose_to_view_mat3x4(pose2),
                                                                            intrinsic_mat,
-                                                                           (1, 0.1, 0.1)
+                                                                           INIT_TRIANGULATION_PARAMS
                                                                            )
 
     point_cloud_builder = PointCloudBuilder(correspondence_ids, points3d)
@@ -63,35 +68,43 @@ def track_and_calc_colors(camera_parameters: CameraParameters,
     view_mats[id2] = pose_to_view_mat3x4(pose2)
 
     while len(unknown_frames) > 0:
-        # get new frame and old frame
+        # get new frame
         new_frame = next(iter(unknown_frames))
+        unknown_frames.remove(new_frame)
         # pnp + ransac
         # 1) 2d-3d
         frame_2d = corner_storage[new_frame]
         _, (point_3d_ids, point_2d_ids) = snp.intersect(point_cloud_builder.ids, frame_2d.ids)
+        good_points_3d = point_cloud_builder.points[point_3d_ids]
+        good_points_2d = frame_2d.points[point_2d_ids]
         # 2) RANSAC
-        best_hypothesis = None
-        best_inliers_count = -1
-        for _ in range(RUNSAC_STEPS):
-            # sample
-            good_sample = np.random.choice(np.arange(len(point_3d_ids)), 4, raplace=False)
-            # hypothesis
-            retval, rvec, tvec = cv2.solvePnP(point_cloud_builder.points[point_3d_ids[good_sample]],
-                                              frame_2d.points[point_2d_ids[good_sample]],
-                                              intrinsic_mat, None, flags=cv2.SOLVEPNP_EPNP)
-            r_mat, _ = cv2.Rodrigues(rvec)
-            hypothesis_pose = Pose(r_mat, tvec)
-            hypothesis_matrix = pose_to_view_mat3x4(hypothesis_pose)
-            # check
-            inlier_indexes = calc_inlier_indices(point_cloud_builder.points[point_3d_ids],
-                                              frame_2d.points[point_2d_ids],
-                                              hypothesis_matrix, MAX_REPROJ_ERROR)
-            if len(inlier_indexes) > best_inliers_count:
-                best_inliers_count = len(inlier_indexes)
-                best_hypothesis = hypothesis_pose
+        _, hypothesis_rvec, hypothesis_tvec, inliers = cv2.solvePnPRansac(good_points_3d,
+                                                                          good_points_2d,
+                                                                          intrinsic_mat, None,
+                                                                          iterationsCount=RUNSAC_STEPS)
         # 3) optimise
-        cv2.solvePnP()
-        cv2.solvePnPRansac()
+        _, rvec, tvec = cv2.solvePnP(good_points_3d[inliers],
+                                     good_points_2d[inliers],
+                                     intrinsic_mat, None,
+                                     tvec=hypothesis_tvec, rvec=hypothesis_rvec, useExtrinsicGuess=True)
+
+        new_view_mat = rodrigues_and_translation_to_view_mat3x4(rvec, tvec)
+        view_mats[new_frame] = new_view_mat
+        # retriangulate
+        for known_frame in known_frames:
+
+            if check_baseline(new_view_mat, view_mats[known_frame], BASELINE):
+                continue
+            correspondence = build_correspondences(frame_2d, corner_storage[known_frame],
+                                                   ids_to_remove=np.setdiff1d(frame_2d.ids, inliers))
+            new_points3d, new_correspondence_ids, new_median_cos = triangulate_correspondences(correspondence,
+                                                                                               new_view_mat,
+                                                                                               view_mats[known_frame],
+                                                                                               intrinsic_mat,
+                                                                                               TRIANGULATION_PARAMS
+                                                                                               )
+            point_cloud_builder.add_points(new_correspondence_ids, new_points3d)
+        known_frames.add(new_frame)
 
     calc_point_cloud_colors(
         point_cloud_builder,
