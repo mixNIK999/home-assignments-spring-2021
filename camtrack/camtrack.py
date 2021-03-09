@@ -4,6 +4,7 @@ __all__ = [
     'track_and_calc_colors'
 ]
 
+import random
 from typing import List, Optional, Tuple
 
 import numpy as np
@@ -24,10 +25,10 @@ from _camtrack import (
 )
 
 RUNSAC_STEPS = 107
-MAX_REPROJ_ERROR = 0.1
-TRIANGULATION_PARAMS = TriangulationParameters(2, 0.1, 0.1)
+TRIANGULATION_PARAMS = TriangulationParameters(0.1, 10, 5)
+MIN_2D_3D = 50
 INIT_TRIANGULATION_PARAMS = TriangulationParameters(10, 0.01, 0.01)
-BASELINE = 20
+BASELINE = 50
 
 
 def track_and_calc_colors(camera_parameters: CameraParameters,
@@ -44,7 +45,6 @@ def track_and_calc_colors(camera_parameters: CameraParameters,
         camera_parameters,
         rgb_sequence[0].shape[0]
     )
-    # TODO: implement
     # init
     id1, pose1 = known_view_1
     id2, pose2 = known_view_2
@@ -68,13 +68,18 @@ def track_and_calc_colors(camera_parameters: CameraParameters,
     view_mats[id2] = pose_to_view_mat3x4(pose2)
 
     while len(unknown_frames) > 0:
+        print(f"#points in cloud = {len(point_cloud_builder.ids)}")
         # get new frame
+        # new_frame = random.sample(unknown_frames, 1)[0]
         new_frame = next(iter(unknown_frames))
         unknown_frames.remove(new_frame)
+        print(f"choosed eqnew frame = {new_frame}")
         # pnp + ransac
         # 1) 2d-3d
         frame_2d = corner_storage[new_frame]
-        _, (point_3d_ids, point_2d_ids) = snp.intersect(point_cloud_builder.ids, frame_2d.ids)
+        _, (point_3d_ids, point_2d_ids) = snp.intersect(point_cloud_builder.ids.flatten(), frame_2d.ids.flatten(),
+                                                        indices=True)
+        print(f"#2d-3d: {len(point_3d_ids)}")
         good_points_3d = point_cloud_builder.points[point_3d_ids]
         good_points_2d = frame_2d.points[point_2d_ids]
         # 2) RANSAC
@@ -82,6 +87,7 @@ def track_and_calc_colors(camera_parameters: CameraParameters,
                                                                           good_points_2d,
                                                                           intrinsic_mat, None,
                                                                           iterationsCount=RUNSAC_STEPS)
+        print(f"#inliers = {len(inliers)}")
         # 3) optimise
         _, rvec, tvec = cv2.solvePnP(good_points_3d[inliers],
                                      good_points_2d[inliers],
@@ -90,7 +96,8 @@ def track_and_calc_colors(camera_parameters: CameraParameters,
 
         new_view_mat = rodrigues_and_translation_to_view_mat3x4(rvec, tvec)
         view_mats[new_frame] = new_view_mat
-        # retriangulate
+        # triangulate
+        print(f"#triangulated points:")
         for known_frame in known_frames:
 
             if check_baseline(new_view_mat, view_mats[known_frame], BASELINE):
@@ -104,6 +111,9 @@ def track_and_calc_colors(camera_parameters: CameraParameters,
                                                                                                TRIANGULATION_PARAMS
                                                                                                )
             point_cloud_builder.add_points(new_correspondence_ids, new_points3d)
+            print(f"({known_frame}, {len(new_correspondence_ids)})", end=" ")
+        print()
+        print()
         known_frames.add(new_frame)
 
     calc_point_cloud_colors(
