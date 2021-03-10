@@ -48,24 +48,25 @@ class _CornerStorageBuilder:
         return StorageImpl(item[1] for item in sorted(self._corners.items()))
 
 
-def _create_mask(mask, points):
+def _create_mask(mask, points, r):
     for p in points.astype(np.int32):
-        mask = cv2.circle(mask, (p[0], p[1]), 10, 255, -1)
+        mask = cv2.circle(mask, (p[0], p[1]), r, 255, -1)
     return 255 - mask
 
 
 def _build_impl(frame_sequence: pims.FramesSequence,
                 builder: _CornerStorageBuilder) -> None:
-    # TODO
     get_index = itertools.count()
-    feature_params = dict(maxCorners=5000,
+    mask_radius = 10
+    feature_params = dict(maxCorners=2000,
                           qualityLevel=0.04,
                           minDistance=7,
                           blockSize=7)
 
-    lk_params = dict(winSize=(15, 15),
-                     maxLevel=2,
-                     criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 10, 0.03))
+    lk_params = dict(winSize=(50, 50),
+                     maxLevel=3,
+                     criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 10, 0.03),
+                     minEigThreshold=0.001)
 
     block_size = feature_params["blockSize"]
     image_0 = frame_sequence[0]
@@ -87,6 +88,10 @@ def _build_impl(frame_sequence: pims.FramesSequence,
         img_1_uint8 = (image_1 * 255).astype(np.uint8)
         updated_points, st, _ = cv2.calcOpticalFlowPyrLK(img_0_uint8, img_1_uint8, old_points, None, **lk_params)
 
+        if frame % 20 == 0:
+            print(f"corners progress {int(100 * frame / len(frame_sequence))}%")
+            print(f"old_points size = {old_points.shape[0]}")
+
         updated_points = updated_points.reshape([-1, 2])
         st = st.reshape(-1)
 
@@ -94,12 +99,14 @@ def _build_impl(frame_sequence: pims.FramesSequence,
         ind = ind[st == 1]
 
         mask = np.zeros_like(img_0_uint8)
-        mask = _create_mask(mask, updated_points)
+        mask = _create_mask(mask, updated_points, mask_radius)
 
         corners_xy = updated_points
         final_ind = ind
 
-        new_points = cv2.goodFeaturesToTrack(image_1, mask=mask, **feature_params)
+        curr_settings = feature_params.copy()
+        curr_settings["maxCorners"] = max(feature_params["maxCorners"] - corners_xy.shape[0], 1)
+        new_points = cv2.goodFeaturesToTrack(image_1, mask=mask, **curr_settings)
         if new_points is not None:
             new_points = new_points.reshape([-1, 2])
             new_ind = np.array([next(get_index) for _ in range(new_points.shape[0])])

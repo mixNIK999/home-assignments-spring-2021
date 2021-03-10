@@ -24,11 +24,13 @@ from _camtrack import (
     rodrigues_and_translation_to_view_mat3x4, TriangulationParameters, check_baseline
 )
 
-RUNSAC_STEPS = 107
-TRIANGULATION_PARAMS = TriangulationParameters(0.1, 10, 5)
-MIN_2D_3D = 50
+RUNSAC_STEPS = 1007
+TRIANGULATION_PARAMS = TriangulationParameters(2, 10, 0.1)
+INLIER_MAX_ERROR = 4
 INIT_TRIANGULATION_PARAMS = TriangulationParameters(10, 0.01, 0.01)
-BASELINE = 50
+MIN_2D_3D = 10
+MIN_INLIER = 10
+BASELINE = 10
 
 
 def track_and_calc_colors(camera_parameters: CameraParameters,
@@ -59,7 +61,7 @@ def track_and_calc_colors(camera_parameters: CameraParameters,
 
     point_cloud_builder = PointCloudBuilder(correspondence_ids, points3d)
     frame_count = len(corner_storage)
-    unknown_frames = set(range(frame_count))
+    unknown_frames = set(range(int(frame_count)))
     unknown_frames.remove(id1)
     unknown_frames.remove(id2)
     known_frames = {id1, id2}
@@ -68,25 +70,32 @@ def track_and_calc_colors(camera_parameters: CameraParameters,
     view_mats[id2] = pose_to_view_mat3x4(pose2)
 
     while len(unknown_frames) > 0:
+        print(f"progress = {100 * len(known_frames) / len(corner_storage):.1f}%")
         print(f"#points in cloud = {len(point_cloud_builder.ids)}")
         # get new frame
         # new_frame = random.sample(unknown_frames, 1)[0]
         new_frame = next(iter(unknown_frames))
-        unknown_frames.remove(new_frame)
-        print(f"choosed eqnew frame = {new_frame}")
+        print(f"choosed new frame = {new_frame}")
         # pnp + ransac
         # 1) 2d-3d
         frame_2d = corner_storage[new_frame]
         _, (point_3d_ids, point_2d_ids) = snp.intersect(point_cloud_builder.ids.flatten(), frame_2d.ids.flatten(),
                                                         indices=True)
         print(f"#2d-3d: {len(point_3d_ids)}")
+        if len(point_3d_ids) < MIN_2D_3D:
+            print("Skip\n")
+            continue
+        # 2) RANSAC
         good_points_3d = point_cloud_builder.points[point_3d_ids]
         good_points_2d = frame_2d.points[point_2d_ids]
-        # 2) RANSAC
         _, hypothesis_rvec, hypothesis_tvec, inliers = cv2.solvePnPRansac(good_points_3d,
                                                                           good_points_2d,
                                                                           intrinsic_mat, None,
+                                                                          reprojectionError=INLIER_MAX_ERROR,
                                                                           iterationsCount=RUNSAC_STEPS)
+        if inliers is None or len(inliers) < MIN_INLIER:
+            print("Skip\n")
+            continue
         print(f"#inliers = {len(inliers)}")
         # 3) optimise
         _, rvec, tvec = cv2.solvePnP(good_points_3d[inliers],
@@ -101,6 +110,7 @@ def track_and_calc_colors(camera_parameters: CameraParameters,
         for known_frame in known_frames:
 
             if check_baseline(new_view_mat, view_mats[known_frame], BASELINE):
+                print(f"#triangulated points:")
                 continue
             correspondence = build_correspondences(frame_2d, corner_storage[known_frame],
                                                    ids_to_remove=np.setdiff1d(frame_2d.ids, inliers))
@@ -112,9 +122,9 @@ def track_and_calc_colors(camera_parameters: CameraParameters,
                                                                                                )
             point_cloud_builder.add_points(new_correspondence_ids, new_points3d)
             print(f"({known_frame}, {len(new_correspondence_ids)})", end=" ")
-        print()
-        print()
+        unknown_frames.remove(new_frame)
         known_frames.add(new_frame)
+        print("\n")
 
     calc_point_cloud_colors(
         point_cloud_builder,
