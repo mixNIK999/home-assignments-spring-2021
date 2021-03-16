@@ -32,6 +32,52 @@ MIN_2D_3D = 10
 MIN_INLIER = 10
 BASELINE = 10
 
+INIT_FRAME_WINDOW = 20
+MIN_E_INLIERS = 50
+E_THRESHOLD = 0.01
+
+
+def init_frame_view(corner_storage: CornerStorage,
+                    intrinsic_mat: np.ndarray) -> Tuple[Tuple[int, Pose], Tuple[int, Pose]]:
+    def test_frames(f_1: int, f_2: int) -> Tuple[Pose, int]:
+        print(f"testing {(f_1, f_2)}")
+        correspondence = build_correspondences(corner_storage[f_1], corner_storage[f_2])
+        E, E_mask = cv2.findEssentialMat(correspondence.points_1, correspondence.points_2, intrinsic_mat,
+                                         method=cv2.RANSAC, threshold=E_THRESHOLD)
+        E_mask = E_mask.flatten()
+        if np.sum(E_mask) > MIN_E_INLIERS:
+            pass
+        print(f"#inliers of E = {np.sum(E_mask)}")
+        R_1, R_2, t_base = cv2.decomposeEssentialMat(E)
+        new_correspondence = build_correspondences(corner_storage[f_1], corner_storage[f_2],
+                                                   ids_to_remove=np.argwhere(1 - E_mask))
+
+        def test_pose(p_2: Pose):
+            p_1 = Pose(np.eye(3), np.zeros(3))
+
+            _, ids, _ = triangulate_correspondences(new_correspondence,
+                                                    pose_to_view_mat3x4(p_1),
+                                                    pose_to_view_mat3x4(p_2),
+                                                    intrinsic_mat,
+                                                    TriangulationParameters(2, 0.1, 0.1)
+                                                    )
+            return len(ids)
+
+        possible_poses = [Pose(R_1, t_base), Pose(R_1, -t_base), Pose(R_2, t_base), Pose(R_2, -t_base)]
+        confidence = [test_pose(pose) for pose in possible_poses]
+        best_ans = np.argmax(confidence)
+        print(f"win pose {best_ans} with #inliers = {confidence[best_ans]}")
+        return possible_poses[best_ans], confidence[best_ans]
+
+    all_interesting_pairs = list(zip(range(len(corner_storage)), range(INIT_FRAME_WINDOW, len(corner_storage))))
+    # all_interesting_pairs = [(i, j) for i in range(len(corner_storage))
+    #                          for j in range(i + INIT_FRAME_WINDOW, len(corner_storage))]
+    res = [test_frames(f_1, f_2) for f_1, f_2 in all_interesting_pairs]
+
+    ans = max(range(len(res)), key=lambda i: res[i][1])
+    best_f_1, best_f_2 = all_interesting_pairs[ans]
+    return (best_f_1, Pose(np.eye(3), np.zeros(3))), (best_f_2, res[ans][0])
+
 
 def track_and_calc_colors(camera_parameters: CameraParameters,
                           corner_storage: CornerStorage,
@@ -39,14 +85,15 @@ def track_and_calc_colors(camera_parameters: CameraParameters,
                           known_view_1: Optional[Tuple[int, Pose]] = None,
                           known_view_2: Optional[Tuple[int, Pose]] = None) \
         -> Tuple[List[Pose], PointCloud]:
-    if known_view_1 is None or known_view_2 is None:
-        raise NotImplementedError()
-
     rgb_sequence = frameseq.read_rgb_f32(frame_sequence_path)
     intrinsic_mat = to_opencv_camera_mat3x3(
         camera_parameters,
         rgb_sequence[0].shape[0]
     )
+    if known_view_1 is None or known_view_2 is None:
+        # raise NotImplementedError()
+        known_view_1, known_view_2 = init_frame_view(corner_storage, intrinsic_mat)
+
     # init
     id1, pose1 = known_view_1
     id2, pose2 = known_view_2
